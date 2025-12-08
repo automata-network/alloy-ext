@@ -1,0 +1,124 @@
+[package]
+name = "alloy-ext"
+version = "1.1.3"
+edition = "2021"
+authors = ["Automata Team"]
+description = "Rust SDK for interacting with Kuru protocol"
+license = "Apache"
+repository = "https://github.com/automata-network/alloy-ext"
+
+[features]
+arbitrary = ["alloy/arbitrary"]
+asm-keccak = ["alloy/asm-keccak"]
+consensus = ["alloy/consensus"]
+consensus-secp256k1 = ["alloy/consensus-secp256k1"]
+contract = ["alloy/contract"]
+default = ["alloy/default"]
+dyn-abi = ["alloy/dyn-abi"]
+eip712 = ["alloy/eip712"]
+eips = ["alloy/eips"]
+ens = ["alloy/ens"]
+essentials = ["alloy/essentials"]
+full = ["alloy/full"]
+genesis = ["alloy/genesis"]
+getrandom = ["alloy/getrandom"]
+hyper = ["alloy/hyper"]
+json = ["alloy/json"]
+json-abi = ["alloy/json-abi"]
+json-rpc = ["alloy/json-rpc"]
+k256 = ["alloy/k256"]
+kzg = ["alloy/kzg"]
+map = ["alloy/map"]
+map-fxhash = ["alloy/map-fxhash"]
+map-hashbrown = ["alloy/map-hashbrown"]
+map-indexmap = ["alloy/map-indexmap"]
+more-tuple-impls = ["alloy/more-tuple-impls"]
+native-keccak = ["alloy/native-keccak"]
+network = ["alloy/network"]
+node-bindings = ["alloy/node-bindings"]
+postgres = ["alloy/postgres"]
+provider-admin-api = ["alloy/provider-admin-api"]
+provider-anvil-api = ["alloy/provider-anvil-api"]
+provider-anvil-node = ["alloy/provider-anvil-node"]
+provider-debug-api = ["alloy/provider-debug-api"]
+provider-engine-api = ["alloy/provider-engine-api"]
+provider-http = ["alloy/provider-http"]
+provider-ipc = ["alloy/provider-ipc"]
+provider-mev-api = ["alloy/provider-mev-api"]
+provider-net-api = ["alloy/provider-net-api"]
+provider-trace-api = ["alloy/provider-trace-api"]
+provider-txpool-api = ["alloy/provider-txpool-api"]
+provider-ws = ["alloy/provider-ws"]
+providers = ["alloy/providers"]
+pubsub = ["alloy/pubsub"]
+rand = ["alloy/rand"]
+reqwest = ["alloy/reqwest"]
+reqwest-default-tls = ["alloy/reqwest-default-tls"]
+reqwest-native-tls = ["alloy/reqwest-native-tls"]
+reqwest-rustls-tls = ["alloy/reqwest-rustls-tls"]
+rlp = ["alloy/rlp"]
+rpc = ["alloy/rpc"]
+rpc-client = ["alloy/rpc-client"]
+rpc-client-ipc = ["alloy/rpc-client-ipc"]
+rpc-client-ws = ["alloy/rpc-client-ws"]
+rpc-types = ["alloy/rpc-types"]
+rpc-types-admin = ["alloy/rpc-types-admin"]
+rpc-types-anvil = ["alloy/rpc-types-anvil"]
+rpc-types-any = ["alloy/rpc-types-any"]
+rpc-types-beacon = ["alloy/rpc-types-beacon"]
+rpc-types-debug = ["alloy/rpc-types-debug"]
+rpc-types-engine = ["alloy/rpc-types-engine"]
+rpc-types-eth = ["alloy/rpc-types-eth"]
+rpc-types-json = ["alloy/rpc-types-json"]
+rpc-types-mev = ["alloy/rpc-types-mev"]
+rpc-types-trace = ["alloy/rpc-types-trace"]
+rpc-types-txpool = ["alloy/rpc-types-txpool"]
+serde = ["alloy/serde"]
+serde-bincode-compat = ["alloy/serde-bincode-compat"]
+sha3-keccak = ["alloy/sha3-keccak"]
+signer-aws = ["alloy/signer-aws"]
+signer-gcp = ["alloy/signer-gcp"]
+signer-keystore = ["alloy/signer-keystore"]
+signer-keystore-geth-compat = ["alloy/signer-keystore-geth-compat"]
+signer-ledger = ["alloy/signer-ledger"]
+signer-ledger-browser = ["alloy/signer-ledger-browser"]
+signer-ledger-node = ["alloy/signer-ledger-node"]
+signer-local = ["alloy/signer-local"]
+signer-mnemonic = ["alloy/signer-mnemonic"]
+signer-mnemonic-all-languages = ["alloy/signer-mnemonic-all-languages"]
+signer-trezor = ["alloy/signer-trezor"]
+signer-turnkey = ["alloy/signer-turnkey"]
+signer-yubihsm = ["alloy/signer-yubihsm"]
+signers = ["alloy/signers"]
+sol-types = ["alloy/sol-types"]
+ssz = ["alloy/ssz"]
+std = ["alloy/std"]
+tiny-keccak = ["alloy/tiny-keccak"]
+transport-http = ["alloy/transport-http"]
+transport-ipc = ["alloy/transport-ipc"]
+transport-ipc-mock = ["alloy/transport-ipc-mock"]
+transport-throttle = ["alloy/transport-throttle"]
+transport-ws = ["alloy/transport-ws"]
+transports = ["alloy/transports"]
+trie = ["alloy/trie"]
+wasm-bindgen = ["alloy/wasm-bindgen"]
+
+[dependencies]
+alloy = { version = "1.1.3" }
+alloy-signer-aws = { version = "1.1.3" }
+anyhow = "1.0"
+async-trait = "0.1"
+dashmap = { version = "6.1.0", features = ["serde", "inline"] }
+inventory = "0.3"
+paste = "1.0"
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+anvil = "0.3.2"
+alloy = { version = "1.1.3", features = ["node-bindings"] }
+test-log = { version = "0.2", features = ["trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json"] }
