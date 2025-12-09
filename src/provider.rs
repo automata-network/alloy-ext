@@ -48,8 +48,8 @@ use alloy::{
 };
 
 use crate::ext::{
-    backoff_duration, classify_rpc_error, AtomicNonceState, RecoveryOptions, RecoveryResult,
-    RpcErrorKind, SingleRecoveryResult, StatefulNonceManager, TrackedPendingTx,
+    backoff_duration, classify_rpc_error, pretty_rpc_error, AtomicNonceState, RecoveryOptions,
+    RecoveryResult, RpcErrorKind, SingleRecoveryResult, StatefulNonceManager, TrackedPendingTx,
 };
 
 // ============================================================================
@@ -674,7 +674,8 @@ impl NetworkProvider {
                 // Fill the transaction (this allocates nonce via NonceFiller)
                 let filled = match provider.fill(tx).await {
                     Ok(filled) => filled,
-                    Err(e) => {
+                    Err(mut e) => {
+                        e = pretty_rpc_error(e);
                         // fill() failed (e.g., gas estimation error)
                         // Check if nonce was allocated by comparing with current state
                         if let Some(status) = nonce_manager.get_status(from).await {

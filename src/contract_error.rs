@@ -34,7 +34,11 @@
 
 use std::borrow::Cow;
 
-use alloy::{contract::Error as ContractError, primitives::Bytes, transports::RpcError};
+use alloy::{
+    contract::Error as ContractError,
+    primitives::Bytes,
+    transports::{RpcError, TransportError},
+};
 
 /// Contract error parser entry for the registry.
 ///
@@ -69,17 +73,28 @@ pub fn parse_contract_error(data: &Bytes) -> Option<String> {
 /// This function attempts to decode the error data from an RPC error response
 /// and append a human-readable cause to the error message.
 pub fn pretty_error(mut err: ContractError) -> ContractError {
-    if let ContractError::TransportError(RpcError::ErrorResp(payload)) = &mut err {
-        if let Some(data) = &payload.data {
-            if let Ok(data) = serde_json::from_str::<Bytes>(data.get()) {
-                if let Some(cause) = parse_contract_error(&data) {
-                    payload.message =
-                        payload.message.clone() + Cow::Owned(format!(", causedBy: {}", cause));
-                }
-            }
-        }
+    if let ContractError::TransportError(rpc_error) = err {
+        err = ContractError::TransportError(pretty_rpc_error(rpc_error));
     }
     err
+}
+
+pub fn pretty_rpc_error(err: TransportError) -> TransportError {
+    match err {
+        RpcError::ErrorResp(payload) => {
+            let mut new_payload = payload.clone();
+            if let Some(data) = &payload.data {
+                if let Ok(data) = serde_json::from_str::<Bytes>(data.get()) {
+                    if let Some(cause) = parse_contract_error(&data) {
+                        new_payload.message = new_payload.message.clone()
+                            + Cow::Owned(format!(", causedBy: {}", cause));
+                    }
+                }
+            }
+            RpcError::ErrorResp(new_payload)
+        }
+        err => err,
+    }
 }
 
 /// Register error parsers for existing contract definitions.
