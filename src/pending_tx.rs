@@ -126,7 +126,10 @@ where
 
         // Now we can safely access other fields
         if !receipt.status() {
-            return Err(anyhow!("transaction failed: {:?}", receipt.status()));
+            return Err(anyhow!(
+                "Transaction execution failed: {}",
+                receipt.transaction_hash
+            ));
         }
 
         let mut inner = self.inner.clone();
