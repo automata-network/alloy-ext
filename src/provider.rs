@@ -37,8 +37,8 @@ use alloy::{
     primitives::{Address, B256, U256},
     providers::{
         fillers::{
-            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
-            WalletFiller,
+            BlobGasFiller, ChainIdFiller, FillProvider, FillerControlFlow, GasFillable, GasFiller,
+            JoinFill, NonceFiller, TxFiller, WalletFiller,
         },
         Identity, PendingTransactionBuilder, Provider, ProviderBuilder, RootProvider, SendableTx,
     },
@@ -165,9 +165,54 @@ impl ProviderConfig {
 // Provider type aliases
 // ============================================================================
 
+#[derive(Debug, Clone)]
+pub struct BoostGasFiller {
+    pub multiplier: u64,
+}
+
+impl BoostGasFiller {
+    pub fn multiplied(multiplier: u64) -> Self {
+        Self { multiplier }
+    }
+}
+
+impl<N: Network> TxFiller<N> for BoostGasFiller {
+    type Fillable = <GasFiller as TxFiller<N>>::Fillable;
+
+    fn status(&self, tx: &<N as Network>::TransactionRequest) -> FillerControlFlow {
+        <GasFiller as TxFiller<N>>::status(&GasFiller, tx)
+    }
+
+    fn fill_sync(&self, _tx: &mut SendableTx<N>) {}
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        tx: &<N as Network>::TransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: Provider<N>,
+    {
+        GasFiller.prepare(provider, tx).await
+    }
+
+    async fn fill(
+        &self,
+        mut fillable: Self::Fillable,
+        tx: SendableTx<N>,
+    ) -> TransportResult<SendableTx<N>> {
+        let gas_limit = match &mut fillable {
+            GasFillable::Legacy { gas_limit, .. } => gas_limit,
+            GasFillable::Eip1559 { gas_limit, .. } => gas_limit,
+        };
+        *gas_limit = (*gas_limit * self.multiplier) / 100;
+        Ok(GasFiller.fill(fillable, tx).await?)
+    }
+}
+
 /// Basic provider with gas, blob gas, nonce (StatefulNonceManager), and chain ID fillers
 pub type BasicProvider = JoinFill<
-    JoinFill<JoinFill<JoinFill<Identity, ChainIdFiller>, GasFiller>, BlobGasFiller>,
+    JoinFill<JoinFill<JoinFill<Identity, ChainIdFiller>, BoostGasFiller>, BlobGasFiller>,
     NonceFiller<StatefulNonceManager>,
 >;
 
@@ -402,12 +447,13 @@ impl NetworkProvider {
         rpc_url: &str,
         polling_time: Option<Duration>,
         receipt_timeout: Option<Duration>,
+        boost_gas_multiplier: u64,
     ) -> anyhow::Result<Self> {
         let nonce_manager = StatefulNonceManager::new();
         let http_provider = ProviderBuilder::new()
             .disable_recommended_fillers()
             .filler(ChainIdFiller::default())
-            .filler(GasFiller)
+            .filler(BoostGasFiller::multiplied(boost_gas_multiplier))
             .filler(BlobGasFiller)
             .filler(NonceFiller::new(nonce_manager.clone()))
             .connect_http(rpc_url.parse()?);
