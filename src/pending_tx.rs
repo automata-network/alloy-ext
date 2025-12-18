@@ -33,7 +33,7 @@
 //! ```
 
 use alloy::{
-    network::{Ethereum, Network},
+    network::{Ethereum, Network, ReceiptResponse},
     primitives::B256,
     sol_types::SolEventInterface,
 };
@@ -79,14 +79,16 @@ where
     inner: T,
 }
 
-impl<T, E, P> PendingTxAccum<T, E, P, Ethereum>
+impl<T, E, P, N> PendingTxAccum<T, E, P, N>
 where
+    N: Network,
+    N::TxEnvelope: Clone,
     T: Clone,
-    P: ProviderEx<Ethereum>,
+    P: ProviderEx<N>,
     E: SolEventInterface,
 {
     /// Create with default initial value
-    pub fn new<F>(tracked: TrackedPendingTx<P, Ethereum>, f: F) -> Self
+    pub fn new<F>(tracked: TrackedPendingTx<P, N>, f: F) -> Self
     where
         T: Default,
         F: Fn(E, &mut T) + Send + 'static,
@@ -95,7 +97,7 @@ where
     }
 
     /// Create with specified initial value.
-    pub fn with_initial<F>(tracked: TrackedPendingTx<P, Ethereum>, initial: T, f: F) -> Self
+    pub fn with_initial<F>(tracked: TrackedPendingTx<P, N>, initial: T, f: F) -> Self
     where
         F: Fn(E, &mut T) + Send + 'static,
     {
@@ -106,29 +108,53 @@ where
         }
     }
 
-    /// Get the transaction hash
+    /// Get the transaction hash (always returns the original TX hash).
     pub fn tx_hash(&self) -> B256 {
         self.tracked.tx_hash()
     }
 
-    /// Get the transaction receipt.
+    /// Get the full transaction resolution with cancel fallback.
     ///
-    /// This calls `TrackedPendingTx.get_receipt()` which automatically confirms the nonce.
-    pub async fn receipt(&mut self) -> anyhow::Result<&<Ethereum as Network>::ReceiptResponse> {
-        self.tracked.get_receipt().await
+    /// This gives you complete control over handling all possible outcomes:
+    /// - `Confirmed` / `OriginalConfirmedAfterCancel` - original TX was mined
+    /// - `Cancelled` - cancel TX was mined instead (original TX replaced)
+    /// - `Timeout` - neither TX was mined
+    ///
+    /// Use this when you need to handle cancellation or timeout scenarios explicitly.
+    pub async fn resolution(&mut self) -> anyhow::Result<&TxResolution<N>> {
+        self.tracked.resolution().await
     }
 
-    /// Get the accumulated result from transaction events.
+    /// Get the original transaction's receipt with cancel fallback.
     ///
-    /// This calls `TrackedPendingTx.get_receipt()` which automatically confirms the nonce.
-    pub async fn result(&mut self) -> anyhow::Result<T> {
-        let receipt = self.tracked.get_receipt().await?;
+    /// Only succeeds if the original transaction was confirmed.
+    /// Returns error if transaction was cancelled or timed out.
+    ///
+    /// For full control over all outcomes, use [`resolution()`](Self::resolution) instead.
+    pub async fn receipt(&mut self) -> anyhow::Result<&N::ReceiptResponse> {
+        self.resolution().await?.receipt()
+    }
+}
 
-        // Now we can safely access other fields
+impl<T, E, P> PendingTxAccum<T, E, P, Ethereum>
+where
+    T: Clone,
+    P: ProviderEx<Ethereum>,
+    E: SolEventInterface,
+{
+    /// Get the accumulated result from transaction events with cancel fallback.
+    ///
+    /// Only succeeds if the original transaction was confirmed and succeeded (not reverted).
+    /// Returns error if transaction was cancelled, timed out, or reverted.
+    ///
+    /// For full control over all outcomes, use [`resolution()`](Self::resolution) instead.
+    pub async fn result(&mut self) -> anyhow::Result<T> {
+        // Get resolution and extract receipt (avoid double borrow by not calling self.receipt())
+        let receipt = self.tracked.get_receipt().await?;
         if !receipt.status() {
             return Err(anyhow!(
-                "Transaction execution failed: {}",
-                receipt.transaction_hash
+                "Transaction reverted: {}",
+                receipt.transaction_hash()
             ));
         }
 
@@ -144,3 +170,110 @@ where
 }
 
 // No Drop implementation needed - TrackedPendingTx handles nonce lifecycle
+
+/// Resolved transaction state returned by `resolution()`.
+///
+/// This enum represents all possible outcomes after waiting for a transaction:
+/// - `Confirmed`: Original TX confirmed (happy path)
+/// - `OriginalConfirmedAfterCancel`: Original TX won the race against cancel TX
+/// - `Cancelled`: Cancel TX confirmed, original was replaced
+/// - `Timeout`: Both TXs timed out
+pub enum TxResolution<N: Network> {
+    /// Original transaction confirmed (happy path)
+    Confirmed {
+        /// Receipt of the confirmed transaction
+        receipt: N::ReceiptResponse,
+    },
+
+    /// Original TX confirmed after cancel TX was sent (cancel lost race)
+    OriginalConfirmedAfterCancel {
+        /// Receipt of the original transaction
+        receipt: N::ReceiptResponse,
+        /// Hash of the cancel TX that was sent but not mined
+        cancel_tx_hash: B256,
+    },
+
+    /// Cancel TX confirmed, original was replaced
+    Cancelled {
+        /// Receipt of the cancel transaction (0 ETH to self)
+        cancel_receipt: N::ReceiptResponse,
+        /// Hash of the original TX that was replaced
+        original_tx_hash: B256,
+    },
+
+    /// Both TXs timed out, nonce marked ABANDONED
+    Timeout {
+        /// Hash of the original transaction
+        original_tx_hash: B256,
+        /// Hash of the cancel transaction
+        cancel_tx_hash: B256,
+        /// The nonce used by both transactions
+        nonce: u64,
+    },
+}
+
+impl<N: Network> TxResolution<N> {
+    /// Returns true if original TX was confirmed (happy path or after cancel attempt)
+    #[cfg(test)]
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self,
+            TxResolution::Confirmed { .. } | TxResolution::OriginalConfirmedAfterCancel { .. }
+        )
+    }
+
+    /// Returns true if the transaction was cancelled
+    #[cfg(test)]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, TxResolution::Cancelled { .. })
+    }
+
+    /// Returns true if resolution is indeterminate (both phases timed out)
+    #[cfg(test)]
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, TxResolution::Timeout { .. })
+    }
+
+    /// Get the original transaction's receipt (if it was confirmed).
+    /// Returns Err for Cancelled and Timeout states.
+    pub fn receipt(&self) -> anyhow::Result<&N::ReceiptResponse> {
+        match self {
+            TxResolution::Confirmed { receipt } => Ok(receipt),
+            TxResolution::OriginalConfirmedAfterCancel { receipt, .. } => Ok(receipt),
+            TxResolution::Cancelled {
+                cancel_receipt,
+                original_tx_hash,
+            } => Err(anyhow!(
+                "Transaction {} was cancelled; cancel tx_hash: {:?}",
+                original_tx_hash,
+                cancel_receipt.transaction_hash()
+            )),
+            TxResolution::Timeout { original_tx_hash, cancel_tx_hash, nonce } => {
+                Err(anyhow!("Transaction timed out without confirmation, original tx_hash: {:?}, cancel tx_hash: {:?}, nonce: {}", original_tx_hash, cancel_tx_hash, nonce))
+            }
+        }
+    }
+
+    /// Get the cancel transaction's receipt (if cancel was confirmed).
+    /// Only returns Some for the Cancelled state.
+    #[cfg(test)]
+    pub fn cancel_receipt(&self) -> Option<&N::ReceiptResponse> {
+        match self {
+            TxResolution::Cancelled { cancel_receipt, .. } => Some(cancel_receipt),
+            _ => None,
+        }
+    }
+
+    /// Get cancel TX hash if one was sent
+    #[cfg(test)]
+    pub fn cancel_tx_hash(&self) -> Option<B256> {
+        match self {
+            TxResolution::OriginalConfirmedAfterCancel { cancel_tx_hash, .. } => {
+                Some(*cancel_tx_hash)
+            }
+            TxResolution::Cancelled { .. } => None, // cancel receipt has the hash
+            TxResolution::Timeout { cancel_tx_hash, .. } => Some(*cancel_tx_hash),
+            TxResolution::Confirmed { .. } => None,
+        }
+    }
+}

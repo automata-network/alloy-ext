@@ -86,7 +86,7 @@ impl AnvilTestHarness {
         let instance = config(Anvil::new()).try_spawn()?;
         let endpoint_url: String = instance.endpoint().parse()?;
         let provider =
-            NetworkProvider::with_http(&endpoint_url, None, Some(Duration::from_secs(5))).await?;
+            NetworkProvider::with_http(&endpoint_url, None, Some(Duration::from_secs(5)), 100).await?;
 
         let accounts = instance.addresses().to_vec();
         let keys: Vec<PrivateKeySigner> =
@@ -105,7 +105,7 @@ impl AnvilTestHarness {
     pub async fn new_provider(&self, signer: Option<Address>) -> Result<NetworkProvider> {
         let endpoint_url: String = self.instance.endpoint().parse()?;
         let provider =
-            NetworkProvider::with_http(&endpoint_url, None, Some(Duration::from_secs(5))).await?;
+            NetworkProvider::with_http(&endpoint_url, None, Some(Duration::from_secs(5)), 100).await?;
         if let Some(signer_addr) = signer {
             let key = self
                 .keys

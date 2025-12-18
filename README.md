@@ -5,8 +5,10 @@ A production-grade extension library for [Alloy](https://github.com/alloy-rs/all
 ## Features
 
 - **Stateful Nonce Management**: Track nonce lifecycle (Reserved → Pending → Confirmed/Abandoned) with automatic gap filling
+- **Transaction Resolution**: Two-phase resolution with automatic cancel fallback on timeout
 - **Auto Recovery**: Automatic retry and recovery for nonce errors, network errors, and timeouts
 - **Transaction Rebroadcasting**: Periodic rebroadcast to prevent mempool eviction
+- **Gas Pricing Utilities**: Smart gas pricing for replacement transactions (cancel TX, gap filling)
 - **Contract Error Parsing**: Distributed registry for parsing Solidity contract errors into human-readable messages
 - **RPC Error Classification**: Intelligent error classification for recovery decisions
 
@@ -102,6 +104,27 @@ let provider = provider.with_rebroadcast(
 );
 ```
 
+### Cancel Configuration
+
+Configure automatic cancel behavior on timeout:
+
+```rust
+use std::time::Duration;
+
+let provider = provider.with_cancel(
+    CancelConfig::default()
+        .with_enabled(true)              // Enable cancel on timeout (default: true)
+        .with_gas_multiplier(2.0)        // Cancel TX gas = original * 2.0
+        .with_phase2_timeout_multiplier(5.0)  // Phase 2 timeout = receipt_timeout * 5
+);
+
+// Or set explicit Phase 2 timeout
+let provider = provider.with_cancel(
+    CancelConfig::default()
+        .with_phase2_timeout(Duration::from_secs(300))
+);
+```
+
 ## Contract Definition and Error Parsing
 
 Use the `contract!` macro to define contracts and automatically register error parsers:
@@ -134,7 +157,7 @@ register_contract_errors!(OrderBook);
 
 ## TrackedPendingTx
 
-`TrackedPendingTx` wraps a pending transaction with nonce tracking:
+`TrackedPendingTx` wraps a pending transaction with nonce tracking and two-phase resolution:
 
 ```rust
 let mut tracked = provider.send_transaction_ex(tx).await?;
@@ -144,11 +167,66 @@ println!("Hash: {:?}", tracked.tx_hash());
 println!("Nonce: {}", tracked.nonce());
 println!("From: {:?}", tracked.address());
 
-// Wait for receipt (confirms nonce automatically)
+// Simple: Wait for receipt (uses config default for cancel behavior)
 let receipt = tracked.get_receipt().await?;
 
 // Or drop without waiting (marks nonce as abandoned)
 drop(tracked);  // Will be recovered on next send
+```
+
+### Transaction Resolution
+
+For full control over transaction outcomes, use `resolution()`:
+
+```rust
+use alloy::ext::TxResolution;
+
+let mut tracked = provider.send_transaction_ex(tx).await?;
+
+// resolution() uses CancelConfig::enabled from provider config
+let resolution = tracked.resolution().await?;
+
+// Or explicitly control cancel behavior
+let resolution = tracked.resolution_ex(true).await?;  // Force enable cancel
+let resolution = tracked.resolution_ex(false).await?; // Disable cancel
+
+match resolution {
+    TxResolution::Confirmed { receipt } => {
+        println!("TX confirmed: {:?}", receipt.transaction_hash());
+    }
+    TxResolution::OriginalConfirmedAfterCancel { receipt, cancel_tx_hash } => {
+        println!("Original TX won the race against cancel");
+    }
+    TxResolution::Cancelled { cancel_receipt, original_tx_hash } => {
+        println!("TX was cancelled, original {} replaced", original_tx_hash);
+    }
+    TxResolution::Timeout { original_tx_hash, cancel_tx_hash, nonce } => {
+        eprintln!("Both TXs timed out - manual intervention required");
+    }
+}
+```
+
+### Two-Phase Resolution Flow
+
+When `cancel_on_timeout` is enabled:
+
+```
+Phase 1: Wait for confirmation
+    |
+    +-- Confirmed ----------> Return TxResolution::Confirmed
+    |
+    +-- Timeout -----------> Send cancel TX (2x gas)
+                                  |
+                            Phase 2: Race original vs cancel
+                                  |
+                    +-------------+-------------+
+                    |             |             |
+                Original      Cancel        Both
+                  wins         wins        timeout
+                    |             |             |
+                    v             v             v
+             OriginalConfirmed  Cancelled   Timeout
+             AfterCancel
 ```
 
 ## Event Accumulation
