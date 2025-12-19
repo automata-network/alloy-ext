@@ -34,7 +34,7 @@ use std::{sync::Arc, time::Duration};
 use alloy::{
     consensus::Transaction,
     network::{Ethereum, EthereumWallet, Network, NetworkWallet},
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256},
     providers::{
         fillers::{
             BlobGasFiller, ChainIdFiller, FillProvider, FillerControlFlow, GasFillable, GasFiller,
@@ -42,7 +42,6 @@ use alloy::{
         },
         Identity, PendingTransactionBuilder, Provider, ProviderBuilder, RootProvider, SendableTx,
     },
-    rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     transports::{RpcError, TransportResult},
 };
@@ -50,6 +49,7 @@ use alloy::{
 use crate::ext::{
     backoff_duration, classify_rpc_error, pretty_rpc_error, AtomicNonceState, RecoveryOptions,
     RecoveryResult, RpcErrorKind, SingleRecoveryResult, StatefulNonceManager, TrackedPendingTx,
+    TxGas,
 };
 
 // ============================================================================
@@ -100,6 +100,73 @@ impl RebroadcastConfig {
     }
 }
 
+/// Configuration for automatic cancel fallback on receipt timeout.
+///
+/// When a transaction times out during the initial wait period (Phase 1),
+/// a cancel transaction can be automatically sent with higher gas price.
+/// The system then enters Phase 2, racing the original and cancel transactions.
+///
+/// ## Usage
+///
+/// ```ignore
+/// // get_receipt() returns &TxResolution with cancel fallback behavior
+/// let resolution = tracked.get_receipt().await?;
+/// match resolution {
+///     TxResolution::Confirmed { .. } => { /* Phase 1 success */ }
+///     TxResolution::Cancelled { .. } => { /* Cancel won the race */ }
+///     TxResolution::Timeout { .. } => { /* Both timed out */ }
+///     _ => {}
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CancelConfig {
+    pub enabled: bool,
+    /// Gas price multiplier for cancel transaction (default: 2.0).
+    /// Must be > 1.0 to outbid the original transaction in mempool.
+    /// Higher values increase likelihood of cancel being mined first.
+    pub gas_multiplier: f64,
+
+    /// Phase 2 timeout multiplier relative to receipt_timeout (default: 5.0).
+    /// Phase 2 timeout = receipt_timeout * phase2_timeout_multiplier.
+    /// Only used when `phase2_timeout` is None.
+    pub phase2_timeout_multiplier: f64,
+
+    /// Explicit Phase 2 timeout duration.
+    /// When set, overrides `phase2_timeout_multiplier`.
+    pub phase2_timeout: Option<Duration>,
+}
+
+impl Default for CancelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gas_multiplier: 2.0,
+            phase2_timeout_multiplier: 5.0,
+            phase2_timeout: None,
+        }
+    }
+}
+
+impl CancelConfig {
+    /// Set gas price multiplier for cancel transaction.
+    pub fn with_gas_multiplier(mut self, multiplier: f64) -> Self {
+        self.gas_multiplier = multiplier;
+        self
+    }
+
+    /// Set Phase 2 timeout multiplier (relative to receipt_timeout).
+    pub fn with_phase2_timeout_multiplier(mut self, multiplier: f64) -> Self {
+        self.phase2_timeout_multiplier = multiplier;
+        self
+    }
+
+    /// Set explicit Phase 2 timeout duration.
+    pub fn with_phase2_timeout(mut self, timeout: Duration) -> Self {
+        self.phase2_timeout = Some(timeout);
+        self
+    }
+}
+
 /// Configuration for provider behavior including recovery options.
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -113,6 +180,8 @@ pub struct ProviderConfig {
     pub retry_backoff_ms: u64,
     /// Rebroadcast configuration
     pub rebroadcast: RebroadcastConfig,
+    /// Cancel fallback configuration for `get_receipt_with_cancel()`
+    pub cancel: CancelConfig,
 }
 
 impl Default for ProviderConfig {
@@ -123,6 +192,7 @@ impl Default for ProviderConfig {
             max_send_retries: 3,
             retry_backoff_ms: 100,
             rebroadcast: RebroadcastConfig::default(),
+            cancel: CancelConfig::default(),
         }
     }
 }
@@ -157,6 +227,12 @@ impl ProviderConfig {
     /// Set rebroadcast configuration
     pub fn with_rebroadcast(mut self, rebroadcast: RebroadcastConfig) -> Self {
         self.rebroadcast = rebroadcast;
+        self
+    }
+
+    /// Set cancel fallback configuration
+    pub fn with_cancel(mut self, cancel: CancelConfig) -> Self {
+        self.cancel = cancel;
         self
     }
 }
@@ -244,6 +320,24 @@ pub trait ProviderEx<N: Network>: Provider<N> + Clone {
         &self,
         tx: SendableTx<N>,
     ) -> TransportResult<PendingTransactionBuilder<N>>;
+
+    /// Fill a transaction request with gas, nonce, chain_id, etc.
+    ///
+    /// This is needed because the Provider trait's fill method doesn't work
+    /// well through generic trait bounds due to async trait limitations.
+    async fn fill(&self, tx: N::TransactionRequest) -> TransportResult<SendableTx<N>>;
+
+    /// Build and send a replacement transaction (cancel or gap fill).
+    ///
+    /// Creates a 0-value self-transfer with the specified nonce to replace
+    /// a pending transaction or fill a nonce gap.
+    async fn build_and_send_replacement_tx(
+        &self,
+        from: Address,
+        nonce: u64,
+        gas_source: TxGas,
+        gas_multiplier: f64,
+    ) -> TransportResult<(B256, SendableTx<N>, PendingTransactionBuilder<N>)>;
 }
 
 // ============================================================================
@@ -326,6 +420,16 @@ impl ProviderEx<Ethereum> for NetworkProvider {
             NetworkProvider::Http { .. } => Err(RpcError::UnsupportedFeature(
                 "Cannot send transaction without a signer",
             )),
+        }
+    }
+
+    async fn fill(
+        &self,
+        tx: <Ethereum as Network>::TransactionRequest,
+    ) -> TransportResult<SendableTx<Ethereum>> {
+        match self {
+            NetworkProvider::Wallet { provider, .. } => provider.fill(tx).await,
+            NetworkProvider::Http { provider, .. } => provider.fill(tx).await,
         }
     }
 
@@ -437,6 +541,44 @@ impl ProviderEx<Ethereum> for NetworkProvider {
                     retries += 1;
                 }
             }
+        }
+    }
+
+    async fn build_and_send_replacement_tx(
+        &self,
+        from: Address,
+        nonce: u64,
+        gas_source: TxGas,
+        gas_multiplier: f64,
+    ) -> TransportResult<(
+        B256,
+        SendableTx<Ethereum>,
+        PendingTransactionBuilder<Ethereum>,
+    )> {
+        match self {
+            NetworkProvider::Wallet { provider, .. } => {
+                // Build replacement TX with gas pricing applied
+                let tx = gas_source
+                    .build_replacement_tx(from, nonce, provider, gas_multiplier)
+                    .await?;
+
+                tracing::debug!(
+                    %from, nonce, gas_multiplier,
+                    "built replacement transaction"
+                );
+
+                // Fill remaining fields (gas limit, chain_id) but NOT nonce (already set)
+                let filled = provider.fill(tx).await?;
+
+                // Send the replacement transaction
+                let pending = self.send_transaction_inner(filled.clone()).await?;
+                let tx_hash = *pending.tx_hash();
+
+                Ok((tx_hash, filled, pending))
+            }
+            NetworkProvider::Http { .. } => Err(RpcError::UnsupportedFeature(
+                "Cannot send transaction without a signer",
+            )),
         }
     }
 }
@@ -614,7 +756,6 @@ impl NetworkProvider {
     ) -> TransportResult<TrackedPendingTx<Self, Ethereum>> {
         match self {
             NetworkProvider::Wallet {
-                provider,
                 nonce_manager,
                 receipt_timeout,
                 ..
@@ -626,26 +767,18 @@ impl NetworkProvider {
                     )))
                 })?;
 
-                // Build a cancel transaction: 0 ETH to self with specific nonce
-                let mut tx = TransactionRequest::default()
-                    .from(from)
-                    .to(from)
-                    .value(U256::ZERO)
-                    .nonce(nonce);
-
-                // Get current gas price and apply multiplier
-                let gas_price: u128 = provider.get_gas_price().await?;
-                let boosted_gas_price = (gas_price as f64 * gas_price_multiplier) as u128;
-                tx = tx.gas_price(boosted_gas_price);
-
-                // Fill remaining fields (gas limit, chain_id) but NOT nonce (already set)
-                let filled = provider.fill(tx).await?;
-
-                // Send the cancel transaction
-                let pending = match self.send_transaction_inner(filled.clone()).await {
-                    Ok(pending) => pending,
+                // Use shared helper with network gas estimation
+                let (tx_hash, filled, pending) = match self
+                    .build_and_send_replacement_tx(
+                        from,
+                        nonce,
+                        TxGas::FromNetwork,
+                        gas_price_multiplier,
+                    )
+                    .await
+                {
+                    Ok(result) => result,
                     Err(e) => {
-                        // Don't release on failure - we're trying to fill a gap
                         tracing::warn!(
                             %from, nonce, error = %e,
                             "failed to send cancel transaction for gap filling"
@@ -653,10 +786,10 @@ impl NetworkProvider {
                         return Err(e);
                     }
                 };
+
                 let pending = pending.with_timeout(*receipt_timeout);
 
                 // Mark as sent (transition from Abandoned to Pending)
-                let tx_hash = *pending.tx_hash();
                 nonce_manager.mark_sent(from, nonce, tx_hash).await;
                 tracing::info!(
                     %from, nonce, %tx_hash,

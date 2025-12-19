@@ -33,6 +33,9 @@ mod contract_error;
 /// RPC error classification and wrapper types
 mod error;
 
+/// Gas pricing utilities for transaction replacement
+mod gas;
+
 /// Stateful nonce manager with atomic state transitions for nonce lifecycle tracking
 mod nonce;
 
@@ -78,6 +81,7 @@ pub mod ext {
     pub use super::call_builder::*;
     pub use super::contract_error::*;
     pub use super::error::*;
+    pub use super::gas::*;
     pub use super::nonce::*;
     pub use super::pending_tx::*;
     pub use super::provider::*;
