@@ -596,7 +596,7 @@ impl NetworkProvider {
             .disable_recommended_fillers()
             .filler(ChainIdFiller::default())
             .filler(BoostGasFiller::multiplied(boost_gas_multiplier))
-            .filler(BlobGasFiller)
+            .filler(BlobGasFiller::default())
             .filler(NonceFiller::new(nonce_manager.clone()))
             .connect_http(rpc_url.parse()?);
         if let Some(polling_time) = polling_time {
