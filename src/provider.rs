@@ -297,6 +297,7 @@ pub trait ProviderEx<N: Network>: Provider<N> + Clone {
     fn get_receipt_timeout(&self) -> Option<Duration>;
     fn nonce_manager(&self) -> &StatefulNonceManager;
     fn config(&self) -> &ProviderConfig;
+    fn chain_id(&self) -> u64;
 
     /// Send a transaction and return TrackedPendingTx with nonce information.
     ///
@@ -363,6 +364,7 @@ pub trait ProviderEx<N: Network>: Provider<N> + Clone {
 pub enum NetworkProvider {
     /// HTTP provider without wallet signing
     Http {
+        chain_id: u64,
         provider: FillProvider<BasicProvider, RootProvider>,
         receipt_timeout: Option<Duration>,
         nonce_manager: StatefulNonceManager,
@@ -370,6 +372,7 @@ pub enum NetworkProvider {
     },
     /// Provider with wallet signing and nonce management
     Wallet {
+        chain_id: u64,
         wallet: EthereumWallet,
         base: FillProvider<BasicProvider, RootProvider>,
         provider: FillProvider<JoinFill<BasicProvider, WalletFiller<EthereumWallet>>, RootProvider>,
@@ -380,6 +383,13 @@ pub enum NetworkProvider {
 }
 
 impl ProviderEx<Ethereum> for NetworkProvider {
+    fn chain_id(&self) -> u64 {
+        match self {
+            NetworkProvider::Http { chain_id, .. } => *chain_id,
+            NetworkProvider::Wallet { chain_id, .. } => *chain_id,
+        }
+    }
+
     fn get_receipt_timeout(&self) -> Option<Duration> {
         match self {
             NetworkProvider::Http {
@@ -602,7 +612,10 @@ impl NetworkProvider {
         if let Some(polling_time) = polling_time {
             http_provider.client().set_poll_interval(polling_time);
         }
+        let chain_id = http_provider.get_chain_id().await?;
+
         Ok(Self::Http {
+            chain_id,
             provider: http_provider,
             receipt_timeout,
             nonce_manager,
@@ -617,6 +630,7 @@ impl NetworkProvider {
         let wallet = EthereumWallet::new(signer);
         match self {
             NetworkProvider::Http {
+                chain_id,
                 provider,
                 nonce_manager,
                 receipt_timeout,
@@ -626,6 +640,7 @@ impl NetworkProvider {
                 let base = provider.clone();
                 let provider = base.clone().join_with(WalletFiller::new(wallet.clone()));
                 NetworkProvider::Wallet {
+                    chain_id: *chain_id,
                     wallet,
                     base,
                     provider,
@@ -635,6 +650,7 @@ impl NetworkProvider {
                 }
             }
             NetworkProvider::Wallet {
+                chain_id,
                 base,
                 nonce_manager,
                 receipt_timeout,
@@ -643,6 +659,7 @@ impl NetworkProvider {
             } => {
                 let provider = base.clone().join_with(WalletFiller::new(wallet.clone()));
                 NetworkProvider::Wallet {
+                    chain_id: *chain_id,
                     wallet,
                     base: base.clone(),
                     provider,
