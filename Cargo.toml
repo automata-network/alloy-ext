@@ -3,7 +3,7 @@ name = "alloy-ext"
 version = "1.7.3"
 edition = "2021"
 authors = ["Automata Team"]
-description = "Rust SDK for interacting with Kuru protocol"
+description = "A production-grade extension library for Alloy that provides advanced transaction management, nonce lifecycle tracking, and automatic error recovery for Ethereum applications."
 license = "Apache-2.0"
 repository = "https://github.com/automata-network/alloy-ext"
 
