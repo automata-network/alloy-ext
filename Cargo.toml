@@ -1,6 +1,6 @@
 [package]
 name = "alloy-ext"
-version = "1.7.3"
+version = "1.7.4"
 edition = "2021"
 authors = ["Automata Team"]
 description = "A production-grade extension library for Alloy that provides advanced transaction management, nonce lifecycle tracking, and automatic error recovery for Ethereum applications."
