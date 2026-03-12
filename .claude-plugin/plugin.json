@@ -1,0 +1,9 @@
+{
+  "name": "alloy-ext",
+  "description": "Teaches Claude how to use alloy-ext for production Ethereum transaction management — contract definitions, NetworkProvider, transaction sending, nonce lifecycle, event accumulation, error recovery, and SDK wrapping patterns.",
+  "version": "1.7.4",
+  "author": {
+    "name": "Automata Network"
+  },
+  "repository": "https://github.com/automata-network/alloy-ext"
+}

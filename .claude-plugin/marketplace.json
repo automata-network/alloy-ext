@@ -1,0 +1,14 @@
+{
+  "name": "automata-network",
+  "owner": {
+    "name": "Automata Network"
+  },
+  "plugins": [
+    {
+      "name": "alloy-ext",
+      "source": ".",
+      "description": "Teaches Claude how to use alloy-ext for production Ethereum transaction management.",
+      "version": "1.7.4"
+    }
+  ]
+}
